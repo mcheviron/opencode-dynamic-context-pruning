@@ -1,4 +1,8 @@
-export function buildAnalysisPrompt(unprunedToolCallIds: string[], messages: any[]): string {
+export function buildAnalysisPrompt(unprunedToolCallIds: string[], messages: any[], protectedTools: string[]): string {
+    const protectedToolsText = protectedTools.length > 0 
+        ? `- NEVER prune the following protected tools: ${protectedTools.join(", ")}\n` 
+        : '';
+    
     return `You are a conversation analyzer that identifies obsolete tool outputs in a coding session.
 
 Your task: Analyze the session history and identify tool call IDs whose outputs are NO LONGER RELEVANT to the current conversation context.
@@ -11,7 +15,7 @@ Guidelines for identifying obsolete tool calls:
 5. Tool calls whose information has been replaced by more recent operations
 
 DO NOT prune:
-- Recent tool calls
+${protectedToolsText}- Recent tool calls
 - Tool calls that modified state (edits, writes, etc.)
 - Tool calls whose outputs are actively being discussed
 - Tool calls that produced errors still being debugged

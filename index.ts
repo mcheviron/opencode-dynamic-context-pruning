@@ -19,7 +19,7 @@ export default (async (ctx) => {
     const logger = new Logger(config.debug)
     const stateManager = new StateManager()
     const toolParametersCache = new Map<string, any>() // callID -> parameters
-    const janitor = new Janitor(ctx.client, stateManager, logger, toolParametersCache)
+    const janitor = new Janitor(ctx.client, stateManager, logger, toolParametersCache, config.protectedTools)
 
     const cacheToolParameters = (messages: any[], component: string) => {
         for (const message of messages) {
@@ -72,6 +72,7 @@ export default (async (ctx) => {
 
     logger.info("plugin", "Dynamic Context Pruning plugin initialized", {
         debug: config.debug,
+        protectedTools: config.protectedTools,
         logDirectory: join(homedir(), ".config", "opencode", "logs", "dcp"),
         globalFetchWrapped: true
     })

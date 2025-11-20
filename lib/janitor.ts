@@ -10,7 +10,8 @@ export class Janitor {
         private client: any,
         private stateManager: StateManager,
         private logger: Logger,
-        private toolParametersCache: Map<string, any>
+        private toolParametersCache: Map<string, any>,
+        private protectedTools: string[]
     ) { }
 
     async run(sessionID: string) {
@@ -142,9 +143,34 @@ export class Janitor {
                 unprunedCount: unprunedToolCallIds.length
             })
 
+            // Filter out protected tools from being considered for pruning
+            const protectedToolCallIds: string[] = []
+            const prunableToolCallIds = unprunedToolCallIds.filter(id => {
+                const metadata = toolMetadata.get(id)
+                if (metadata && this.protectedTools.includes(metadata.tool)) {
+                    protectedToolCallIds.push(id)
+                    return false
+                }
+                return true
+            })
+
+            if (protectedToolCallIds.length > 0) {
+                this.logger.debug("janitor", "Protected tools excluded from pruning", {
+                    sessionID,
+                    protectedCount: protectedToolCallIds.length,
+                    protectedTools: protectedToolCallIds.map(id => {
+                        const metadata = toolMetadata.get(id)
+                        return { id, tool: metadata?.tool }
+                    })
+                })
+            }
+
             // If there are no unpruned tool calls, skip analysis
-            if (unprunedToolCallIds.length === 0) {
-                this.logger.debug("janitor", "No unpruned tool calls found, skipping analysis", { sessionID })
+            if (prunableToolCallIds.length === 0) {
+                this.logger.debug("janitor", "No prunable tool calls found, skipping analysis", { 
+                    sessionID,
+                    protectedCount: protectedToolCallIds.length
+                })
                 return
             }
 
@@ -166,7 +192,7 @@ export class Janitor {
                     pruned_tool_call_ids: z.array(z.string()),
                     reasoning: z.string(),
                 }),
-                prompt: buildAnalysisPrompt(unprunedToolCallIds, messages)
+                prompt: buildAnalysisPrompt(prunableToolCallIds, messages, this.protectedTools)
             })
 
             // Expand batch tool IDs to include their children
