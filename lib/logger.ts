@@ -69,9 +69,103 @@ export class Logger {
     }
 
     /**
+     * Parses janitor prompt to extract structured components
+     * Returns null if parsing fails (not a janitor prompt or malformed)
+     * 
+     * Note: The session history in the prompt has literal newlines (not \n escapes)
+     * due to prompt.ts line 93 doing .replace(/\\n/g, '\n') for readability.
+     * We need to reverse this before parsing.
+     */
+    private parseJanitorPrompt(prompt: string): {
+        instructions: string
+        availableToolCallIds: string[]
+        sessionHistory: any[]
+        responseSchema: any
+    } | null {
+        try {
+            // Extract available tool call IDs
+            const idsMatch = prompt.match(/Available tool call IDs for analysis:\s*([^\n]+)/)
+            const availableToolCallIds = idsMatch 
+                ? idsMatch[1].split(',').map(id => id.trim())
+                : []
+
+            // Extract session history (between "Session history:\n" and "\n\nYou MUST respond")
+            // The captured text has literal newlines, so we need to escape them back to \n for valid JSON
+            const historyMatch = prompt.match(/Session history:\s*\n([\s\S]*?)\n\nYou MUST respond/)
+            let sessionHistory: any[] = []
+            
+            if (historyMatch) {
+                // Re-escape newlines in string literals for valid JSON parsing
+                // This reverses the .replace(/\\n/g, '\n') done in prompt.ts
+                const historyText = historyMatch[1]
+                
+                // Fix: escape literal newlines within strings to make valid JSON
+                // We need to be careful to only escape newlines inside string values
+                const fixedJson = this.escapeNewlinesInJson(historyText)
+                sessionHistory = JSON.parse(fixedJson)
+            }
+
+            // Extract instructions (everything before "IMPORTANT: Available tool call IDs")
+            const instructionsMatch = prompt.match(/([\s\S]*?)\n\nIMPORTANT: Available tool call IDs/)
+            const instructions = instructionsMatch 
+                ? instructionsMatch[1].trim()
+                : ''
+
+            // Extract response schema (after "You MUST respond with valid JSON matching this exact schema:")
+            // Note: The schema contains "..." placeholders which aren't valid JSON, so we save it as a string
+            const schemaMatch = prompt.match(/matching this exact schema:\s*\n(\{[\s\S]*?\})\s*\n\nReturn ONLY/)
+            const responseSchema = schemaMatch 
+                ? schemaMatch[1] // Keep as string since it has "..." placeholders
+                : null
+
+            return {
+                instructions,
+                availableToolCallIds,
+                sessionHistory,
+                responseSchema
+            }
+        } catch (error) {
+            // If parsing fails, return null and fall back to default logging
+            return null
+        }
+    }
+
+    /**
+     * Helper to escape literal newlines within JSON string values
+     * This makes JSON with literal newlines parseable again
+     */
+    private escapeNewlinesInJson(jsonText: string): string {
+        // Strategy: Replace literal newlines that appear inside strings with \\n
+        // We detect being "inside a string" by tracking quotes
+        let result = ''
+        let inString = false
+        let escaped = false
+        
+        for (let i = 0; i < jsonText.length; i++) {
+            const char = jsonText[i]
+            const prevChar = i > 0 ? jsonText[i - 1] : ''
+            
+            if (char === '"' && prevChar !== '\\') {
+                inString = !inString
+                result += char
+            } else if (char === '\n' && inString) {
+                // Replace literal newline with escaped version
+                result += '\\n'
+            } else {
+                result += char
+            }
+        }
+        
+        return result
+    }
+
+    /**
      * Saves AI context to a dedicated directory for debugging
      * Each call creates a new timestamped file in ~/.config/opencode/logs/dcp/ai-context/
      * Only writes if debug is enabled
+     * 
+     * For janitor-shadow sessions, parses and structures the embedded session history
+     * for better readability
      */
     async saveWrappedContext(sessionID: string, messages: any[], metadata: any) {
         if (!this.enabled) return
@@ -90,20 +184,66 @@ export class Logger {
             const filename = `${timestamp}_${counter}_${sessionID.substring(0, 15)}.json`
             const filepath = join(aiContextDir, filename)
 
-            const content = {
-                timestamp: new Date().toISOString(),
-                sessionID,
-                metadata,
-                messages
+            // Check if this is a janitor-shadow session
+            const isJanitorShadow = sessionID === "janitor-shadow" && 
+                messages.length === 1 && 
+                messages[0]?.role === 'user' &&
+                typeof messages[0]?.content === 'string'
+
+            let content: any
+
+            if (isJanitorShadow) {
+                // Parse the janitor prompt to extract structured data
+                const parsed = this.parseJanitorPrompt(messages[0].content)
+                
+                if (parsed) {
+                    // Create enhanced structured format for readability
+                    content = {
+                        timestamp: new Date().toISOString(),
+                        sessionID,
+                        metadata,
+                        janitorAnalysis: {
+                            instructions: parsed.instructions,
+                            availableToolCallIds: parsed.availableToolCallIds,
+                            protectedTools: ["task", "todowrite", "todoread"], // From prompt
+                            sessionHistory: parsed.sessionHistory,
+                            responseSchema: parsed.responseSchema
+                        },
+                        // Keep raw prompt for reference/debugging
+                        rawPrompt: messages[0].content
+                    }
+                } else {
+                    // Parsing failed, use default format
+                    content = {
+                        timestamp: new Date().toISOString(),
+                        sessionID,
+                        metadata,
+                        messages,
+                        note: "Failed to parse janitor prompt structure"
+                    }
+                }
+            } else {
+                // Standard format for non-janitor sessions
+                content = {
+                    timestamp: new Date().toISOString(),
+                    sessionID,
+                    metadata,
+                    messages
+                }
             }
 
-            await writeFile(filepath, JSON.stringify(content, null, 2))
+            // Pretty print with 2-space indentation
+            const jsonString = JSON.stringify(content, null, 2)
+            
+            await writeFile(filepath, jsonString)
             
             // Log that we saved it
             await this.debug("logger", "Saved AI context", {
                 sessionID,
                 filepath,
-                messageCount: messages.length
+                messageCount: messages.length,
+                isJanitorShadow,
+                parsed: isJanitorShadow
             })
         } catch (error) {
             // Silently fail - don't break the plugin if logging fails
