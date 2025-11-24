@@ -7,7 +7,7 @@
 function minimizeMessages(messages: any[], alreadyPrunedIds?: string[], protectedToolCallIds?: string[]): any[] {
     const prunedIdsSet = alreadyPrunedIds ? new Set(alreadyPrunedIds.map(id => id.toLowerCase())) : new Set()
     const protectedIdsSet = protectedToolCallIds ? new Set(protectedToolCallIds.map(id => id.toLowerCase())) : new Set()
-    
+
     return messages.map(msg => {
         const minimized: any = {
             role: msg.info?.role
@@ -25,33 +25,33 @@ function minimizeMessages(messages: any[], alreadyPrunedIds?: string[], protecte
                 })
                 .map((part: any) => {
                     // For text parts, keep the text content (needed for user intent & retention requests)
-        if (part.type === 'text') {
-            // Filter out ignored messages (e.g., DCP summary UI messages)
-            if (part.ignored) {
-                return null
-            }
-            return {
-                type: 'text',
-                text: part.text
-            }
-        }
+                    if (part.type === 'text') {
+                        // Filter out ignored messages (e.g., DCP summary UI messages)
+                        if (part.ignored) {
+                            return null
+                        }
+                        return {
+                            type: 'text',
+                            text: part.text
+                        }
+                    }
 
                     // For tool parts, keep what's needed for pruning decisions
                     if (part.type === 'tool') {
                         const callIDLower = part.callID?.toLowerCase()
                         const isAlreadyPruned = prunedIdsSet.has(callIDLower)
                         const isProtected = protectedIdsSet.has(callIDLower)
-                        
+
                         let displayCallID = part.callID
                         if (isAlreadyPruned) {
                             displayCallID = '<already-pruned>'
                         } else if (isProtected) {
                             displayCallID = '<protected>'
                         }
-                        
+
                         const toolPart: any = {
                             type: 'tool',
-                            callID: displayCallID,
+                            toolCallID: displayCallID,
                             tool: part.tool
                         }
 
@@ -99,13 +99,9 @@ function minimizeMessages(messages: any[], alreadyPrunedIds?: string[], protecte
 }
 
 export function buildAnalysisPrompt(unprunedToolCallIds: string[], messages: any[], protectedTools: string[], alreadyPrunedIds?: string[], protectedToolCallIds?: string[]): string {
-    const protectedToolsText = protectedTools.length > 0
-        ? `- NEVER prune tool calls from these protected tools: ${protectedTools.join(", ")}\n`
-        : '';
-
     // Minimize messages to reduce token usage, passing already-pruned and protected IDs for replacement
     const minimizedMessages = minimizeMessages(messages, alreadyPrunedIds, protectedToolCallIds)
-    
+
     // Stringify with pretty-printing, then replace escaped newlines with actual newlines
     // This makes the logged prompts much more readable
     const messagesJson = JSON.stringify(minimizedMessages, null, 2).replace(/\\n/g, '\n')
@@ -120,29 +116,24 @@ Guidelines for identifying obsolete tool calls:
 3. Failed or incorrect tool attempts that were immediately corrected (e.g., reading a file from the wrong path, then reading from the correct path)
 
 DO NOT prune:
-${protectedToolsText}
-- Tool calls that modified state (edits, writes, etc.)
 - Tool calls whose outputs are actively being discussed
 - Tool calls that produced errors still being debugged
-- Tool calls where the user explicitly indicated they want to retain the information (e.g., "save this", "remember this", "keep this for later", "don't output anything else but save this")
 - Tool calls that are the MOST RECENT activity in the conversation (these may be intended for future use)
 
 IMPORTANT: Available tool call IDs for analysis: ${unprunedToolCallIds.join(", ")}
 
-The session history below may contain tool calls with IDs not in the available list above. These are either:
-1. Protected tools (marked with callID "<protected>")
-2. Already-pruned tools (marked with callID "<already-pruned>")
+The session history below may contain tool calls with IDs not in the available list above, these cannot be pruned. These are either:
+1. Protected tools (marked with toolCallID "<protected>")
+2. Already-pruned tools (marked with toolCallID "<already-pruned>")
 
 ONLY return IDs from the available list above.
 
-Session history:
+Session history (each tool call has a "toolCallID" field):
 ${messagesJson}
 
 You MUST respond with valid JSON matching this exact schema:
 {
   "pruned_tool_call_ids": ["id1", "id2", ...],
   "reasoning": "explanation of why these IDs were selected"
-}
-
-Return ONLY the tool call IDs from the available list above that should be pruned.`
+}`
 }
